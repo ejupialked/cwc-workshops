@@ -20,7 +20,7 @@ run counts.
 ## 1. Clone
 
 ```bash
-git clone https://github.com/anthropic-experimental/cwc-workshops
+git clone https://github.com/anthropics/cwc-workshops
 cd cwc-workshops/agent-battle
 ```
 
