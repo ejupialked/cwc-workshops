@@ -76,7 +76,7 @@ only — a participant who curls `/admin/session` with it gets
 ## First-time host setup
 
 ```bash
-git clone https://github.com/anthropic-experimental/cwc-workshops
+git clone https://github.com/anthropics/cwc-workshops
 cd cwc-workshops/agent-battle
 ./host.sh
 ```
