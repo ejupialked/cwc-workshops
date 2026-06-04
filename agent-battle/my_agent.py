@@ -132,6 +132,23 @@ _STREAM_RETRY = (
 _CACHE = Path(f".agent_cache-{_inst}.json" if _inst else ".agent_cache.json")
 
 
+def _iter_all_skills(client):
+    """Yield every skill in the org, paginating explicitly. The API's
+    default page size can claim has_more=false prematurely, so we request
+    big pages and follow next_page tokens ourselves."""
+    page_token = None
+    while True:
+        kwargs = {"limit": 100}
+        if page_token:
+            kwargs["page"] = page_token
+        page = client.beta.skills.list(**kwargs)
+        for sk in (getattr(page, "data", None) or []):
+            yield sk
+        page_token = getattr(page, "next_page", None)
+        if not page_token:
+            break
+
+
 def _resolve_skills(client, cache, entries):
     """Turn AGENT['skills'] entries into CMA skill params. A string
     entry is a local skill directory — upload it once, cache the
@@ -161,7 +178,11 @@ def _resolve_skills(client, cache, entries):
             # display_title is unique per org. If a skill with this title
             # already exists (cache was wiped, or another process in the
             # same org uploaded it), reuse it instead of failing on create.
-            existing = next((sk for sk in client.beta.skills.list()
+            # Paginate EXPLICITLY: the API's default page can report
+            # has_more=false while more pages exist, which silently stops
+            # the SDK's auto-pagination after 20 items and makes the scan
+            # miss existing skills on busy orgs.
+            existing = next((sk for sk in _iter_all_skills(client)
                              if sk.display_title == path.name), None)
             if existing:
                 sid = existing.id
@@ -233,6 +254,33 @@ def _session_vault_ids():
     return [vid] if vid else None
 
 
+def _write_credential(creds, vault_id, cred_id, token, mcp_server_url,
+                      display_name):
+    """Create/update a static_bearer credential, tolerating both live API
+    schemas: some deployments take mcp_server_url INSIDE auth (the SDK's
+    typed shape), others reject it there ("Extra inputs are not
+    permitted") and expect it at the credential top level. Try both."""
+    shapes = [
+        dict(auth={"type": "static_bearer", "token": token,
+                   "mcp_server_url": mcp_server_url}),
+        dict(auth={"type": "static_bearer", "token": token},
+             extra_body={"mcp_server_url": mcp_server_url}),
+    ]
+    last_err = None
+    for kw in shapes:
+        try:
+            if cred_id:
+                return creds.update(cred_id, vault_id=vault_id,
+                                    display_name=display_name, **kw).id
+            return creds.create(vault_id=vault_id,
+                                display_name=display_name, **kw).id
+        except anthropic.BadRequestError as e:
+            last_err = e
+            if "extra inputs" not in str(e).lower():
+                raise
+    raise last_err
+
+
 def _ensure_vault_credential(client, cache, mcp_server_url, token):
     """Create/refresh the static_bearer vault credential binding `token`
     to `mcp_server_url`. Credentials live inside a vault: find-or-create
@@ -269,14 +317,12 @@ def _ensure_vault_credential(client, cache, mcp_server_url, token):
              if getattr(getattr(c, "auth", None), "mcp_server_url", None)
              == mcp_server_url), None)
         cred_id = existing_cred.id if existing_cred else None
-    if cred_id:
-        creds.update(cred_id, vault_id=vault_id, auth=auth)
-    else:
+    if not cred_id:
         print("  registering relay credential in CMA vault...", flush=True)
-        cred_id = creds.create(
-            vault_id=vault_id, auth=auth,
-            display_name=f"agent-battle relay ({PARTICIPANT})",
-        ).id
+    cred_id = _write_credential(
+        creds, vault_id, cred_id, token, mcp_server_url,
+        display_name=f"agent-battle relay ({PARTICIPANT})",
+    )
     vault_cache[mcp_server_url] = {"cred_id": cred_id, "token_hash": token_hash}
     return cred_id
 
@@ -344,21 +390,46 @@ def get_or_create(client):
     ).hexdigest()[:16]
 
     agent_id = cache.get("agent_id")
-    if agent_id and cache.get("spec_hash") == spec_hash:
-        print(f"  reusing agent {agent_id} (config unchanged)", flush=True)
-        agent = client.beta.agents.retrieve(agent_id)
-    elif agent_id:
-        print(f"  updating agent {agent_id} (config changed)", flush=True)
-        cur = client.beta.agents.retrieve(agent_id)
-        agent = client.beta.agents.update(agent_id, version=cur.version, **spec)
-    else:
-        # Cold path (no cache): just create. We used to scan
-        # agents.list() for an existing match, but on a busy org that
-        # linear scan can take minutes. Agent names aren't unique, so
-        # a fresh create is fast and at worst leaves a stale duplicate
-        # in the account from a prior clone — harmless.
-        print(f"  creating agent '{agent_name}'...", flush=True)
-        agent = client.beta.agents.create(name=agent_name, **spec)
+    try:
+        if agent_id and cache.get("spec_hash") == spec_hash:
+            print(f"  reusing agent {agent_id} (config unchanged)", flush=True)
+            agent = client.beta.agents.retrieve(agent_id)
+        elif agent_id:
+            print(f"  updating agent {agent_id} (config changed)", flush=True)
+            cur = client.beta.agents.retrieve(agent_id)
+            agent = client.beta.agents.update(agent_id, version=cur.version, **spec)
+        else:
+            # Cold path (no cache): just create. We used to scan
+            # agents.list() for an existing match, but on a busy org that
+            # linear scan can take minutes. Agent names aren't unique, so
+            # a fresh create is fast and at worst leaves a stale duplicate
+            # in the account from a prior clone — harmless.
+            print(f"  creating agent '{agent_name}'...", flush=True)
+            agent = client.beta.agents.create(name=agent_name, **spec)
+    except anthropic.BadRequestError as e:
+        # Known platform issue: skills created via OAuth/workload-identity
+        # credentials can be listed and versioned but are rejected by agent
+        # validation ("skill_id ... not found") — likely an org- vs
+        # workspace-scoping mismatch. Degrade gracefully so the run isn't
+        # bricked: drop the skill, warn loudly, retry once. Re-attempted on
+        # every run, so it self-heals when the platform fix lands.
+        msg = str(e).lower()
+        if not (spec.get("skills") and "skill" in msg and "not found" in msg):
+            raise
+        print(
+            "\n  ! PLATFORM ISSUE: this account's credentials can create "
+            "skills but not attach them to agents\n"
+            "    (known OAuth/workspace-scoping bug). Continuing WITHOUT "
+            "the skill — your other levers still apply.\n", flush=True)
+        spec = dict(spec, skills=[])
+        spec["tools"] = [t for t in spec["tools"]
+                         if t.get("type") != "agent_toolset_20260401"]
+        spec_hash = "degraded-no-skill"
+        if agent_id:
+            cur = client.beta.agents.retrieve(agent_id)
+            agent = client.beta.agents.update(agent_id, version=cur.version, **spec)
+        else:
+            agent = client.beta.agents.create(name=agent_name, **spec)
 
     env_id = cache.get("env_id")
     if env_id:

@@ -63,6 +63,21 @@ This is the universal fix: fresh world, fresh bot, fresh relay
 registration, fresh agent. ~30s. Tell them to re-run
 `python3 my_agent.py`.
 
+## Nuclear option (when even --restart doesn't fix it)
+
+A fresh clone in a NEW directory has resolved at least one otherwise
+undiagnosable relay-registration failure (clean socket open, instant
+1006, server never sees the message). Stop the old stack first:
+
+```bash
+./setup.sh --stop
+cd ~ && git clone https://github.com/anthropics/cwc-workshops cwc-fresh
+cd cwc-fresh/agent-battle
+```
+
+Then re-export their three env vars and run `./setup.sh` in the new
+directory.
+
 ## Don't
 
 - Don't touch `AGENT["system"]` or any participant-edited config —
