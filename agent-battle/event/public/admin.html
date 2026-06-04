@@ -96,14 +96,8 @@
         Scores only count while the window is open. Open it at GO; close it to freeze the board.
       </p>
       <div class="row">
-        <label>Duration</label>
-        <select id="duration">
-          <option value="1800">30 minutes</option>
-          <option value="2700">45 minutes</option>
-          <option value="3600" selected>1 hour</option>
-          <option value="7200">2 hours</option>
-          <option value="14400">4 hours</option>
-        </select>
+        <label>Duration (minutes)</label>
+        <input type="number" id="duration-mins" min="1" max="1440" step="1" value="30" style="width:7rem">
         <button class="primary" onclick="Admin.openWindow()">Open window</button>
         <button onclick="Admin.closeWindow()">Close window (freeze board)</button>
       </div>
@@ -265,9 +259,12 @@
       },
 
       async openWindow() {
-        const duration = parseInt(document.getElementById('duration').value, 10);
-        const { ok, data } = await this.post('/api/admin/session', { action: 'open', duration_seconds: duration });
-        this.flash('session-msg', ok, ok ? `Window open for ${duration / 60} minutes.` : (data.error || 'failed'));
+        const mins = parseInt(document.getElementById('duration-mins').value, 10);
+        if (!Number.isFinite(mins) || mins < 1 || mins > 1440) {
+          return this.flash('session-msg', false, 'Duration must be 1-1440 minutes.');
+        }
+        const { ok, data } = await this.post('/api/admin/session', { action: 'open', duration_seconds: mins * 60 });
+        this.flash('session-msg', ok, ok ? `Window open for ${mins} minute${mins === 1 ? '' : 's'}.` : (data.error || 'failed'));
         this.refresh();
       },
 
