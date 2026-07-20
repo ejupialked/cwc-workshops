@@ -3,6 +3,7 @@
 import json
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 import plotly.graph_objects as go
 import streamlit as st
@@ -28,7 +29,7 @@ def ts(s: str) -> datetime:
 COLORS = {"checkout": "#ff5c5c", "cart": "#7fd962", "auth": "#39bae6", "inventory": "#ffb454"}
 
 
-def chart(metric_name: str, title: str, yfmt: str | None = None):
+def chart(metric_name: str, title: str, yfmt: Optional[str] = None):
     fig = go.Figure()
     for svc, color in COLORS.items():
         series = metrics.get(svc, {}).get(metric_name)
