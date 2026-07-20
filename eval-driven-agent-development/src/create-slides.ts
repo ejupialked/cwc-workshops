@@ -16,8 +16,8 @@ import { RUNS_DIR, selectTasks, type Task } from "./lib.js";
 // Paste the IDs returned by `ant beta:environments create` /
 // `ant beta:agents create` here. The underlying definitions live in
 // resources/*.yaml; iterate via `ant beta:agents update < file.yaml`.
-const ENVIRONMENT_ID = "";
-const AGENT_ID = "";
+const ENVIRONMENT_ID = "env_0143g1w3cB9SZMVHUXNz4DbJ";
+const AGENT_ID = "agent_01AVcgYBSTjVW9BybFBSQttG";
 const WORKSPACE_ID = "default";
 
 async function runTask(
